@@ -224,51 +224,69 @@ func (t track) SetPrev()            { saved_track = &t }
 
 func check(err error) {
 	if err != nil {
-		panic(err)
+		log.Panic(err)
 	}
 }
 
 func getBody[T any](url string, data *T) error {
 	resp, err := http.Get(url)
-	check(err)
+	if err != nil {
+		return err
+	}
 
 	body, err := io.ReadAll(resp.Body)
-	check(err)
+	if err != nil {
+		return err
+	}
 
 	err = json.Unmarshal(body, data)
-	check(err)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
-func getArtistsFromName(name string) []artist {
+func getArtistsFromName(name string) ([]artist, error) {
 	var data artist_call
 	err := getBody(fmt.Sprintf("http://triton.squid.wtf/search?a=%s", strings.ReplaceAll(name, " ", "")), &data)
-	check(err)
+	if err != nil {
+		fmt.Print("Failed to grab artist\r\n")
+		return []artist{}, err
+	}
 
-	return data.Data.Artists.Items
+	return data.Data.Artists.Items, nil
 }
 
-func getAlbumsFromArtist(id int) []album {
+func getAlbumsFromArtist(id int) ([]album, error) {
 	var data artist_albums_call
 	err := getBody(fmt.Sprintf("https://triton.squid.wtf/artist?f=%d&skip_tracks=True", id), &data)
-	check(err)
+	if err != nil {
+		fmt.Print("Failed to grab albums\r\n")
+		return []album{}, err
+	}
 
-	return data.Albums.Items
+	return data.Albums.Items, nil
 }
 
-func getAlbumFromID(id int) album {
+func getAlbumFromID(id int) (album, error) {
 	var data album_call
 	err := getBody(fmt.Sprintf("http://triton.squid.wtf/album?id=%d", id), &data)
-	check(err)
+	if err != nil {
+		fmt.Print("Failed to grab album\r\n")
+		return album{}, err
+	}
 
-	return data.Data.album
+	return data.Data.album, nil
 }
 
-func getTracksFromAlbum(id int) ([]track, int) {
+func getTracksFromAlbum(id int) ([]track, int, error) {
 	var data album_call
 	err := getBody(fmt.Sprintf("http://triton.squid.wtf/album?id=%d", id), &data)
-	check(err)
+	if err != nil {
+		fmt.Print("Failed to grab tracks\r\n")
+		return []track{}, -1, err
+	}
 
 	var tracks []track
 	for _, t := range data.Data.Items {
@@ -277,30 +295,48 @@ func getTracksFromAlbum(id int) ([]track, int) {
 		}
 	}
 
-	return tracks, data.Data.NumberOfTracks
+	return tracks, data.Data.NumberOfTracks, nil
 }
 
-func getTrackData(id int) []byte {
+func getTrackData(id int) ([]byte, error) {
+	errorHandle := func(err error) bool {
+		if err != nil {
+			fmt.Print("Failed to grab track data\r\n")
+			return true
+		}
+		return false
+	}
+
 	var data track_call
 	err := getBody(fmt.Sprintf("https://triton.squid.wtf/track/?id=%d", id), &data)
-	check(err)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 
 	decoded, err := base64.StdEncoding.DecodeString(data.Data.Manifest)
-	check(err)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 
 	var track decoded_track_call
 	err = json.Unmarshal(decoded, &track)
-	check(err)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 
 	resp, err := http.Get(track.URLs[0])
-	check(err)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 	body, err := io.ReadAll(resp.Body)
-	check(err)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 
-	return body
+	return body, nil
 }
 
-func ConvertFlacToMp3(flacPath string, mp3Path string) {
+func ConvertFlacToMp3(flacPath string, mp3Path string) error {
 	_ = os.Remove(mp3Path)
 	_ = os.MkdirAll(filepath.Dir(mp3Path), 0755)
 
@@ -313,48 +349,69 @@ func ConvertFlacToMp3(flacPath string, mp3Path string) {
 	}).OverWriteOutput().ErrorToStdOut().Run()
 
 	log.SetOutput(prev) // re-enable Go logging
-	check(err)
+	if err != nil {
+		fmt.Print("Failed in flac to mp3 conversion\r\n")
+		return err
+	}
 
-	err = os.Remove(flacPath)
-	check(err)
+	_ = os.Remove(flacPath)
+
+	return nil
 }
 
-func getCoverArt(id int) []byte {
-	resp, err := http.Get(fmt.Sprintf("https://triton.squid.wtf/cover?id=%d", id))
-	check(err)
-
-	body, err := io.ReadAll(resp.Body)
-	check(err)
+func getCoverArt(id int) ([]byte, error) {
+	errorHandle := func(err error) bool {
+		if err != nil {
+			fmt.Print("Failed to grab cover art\r\n")
+			return true
+		}
+		return false
+	}
 
 	var data cover_call
-	err = json.Unmarshal(body, &data)
-	check(err)
+	err := getBody(fmt.Sprintf("https://triton.squid.wtf/cover?id=%d", id), &data)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 
-	resp, err = http.Get(data.Covers[0].MedRes)
-	check(err)
+	resp, err := http.Get(data.Covers[0].MedRes)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 
-	body, err = io.ReadAll(resp.Body)
-	check(err)
+	body, err := io.ReadAll(resp.Body)
+	if errorHandle(err) {
+		return []byte{}, err
+	}
 
-	return body
+	return body, nil
 }
 
-func writeData(data []byte, t track, a album, path string) {
+func writeData(data []byte, t track, a album, path string) error {
 	err := os.Remove(path)
 
 	err = os.MkdirAll(filepath.Dir(path), 0755)
 	f, err := os.Create(path)
-	check(err)
+	if err != nil {
+		fmt.Print("Failed during creation of flac file\r\n")
+		return err
+	}
 
 	defer f.Close()
 
 	_, err = f.Write(data)
-	check(err)
+	if err != nil {
+		fmt.Print("Failed during creation of flac file\r\n")
+		return err
+	}
 
 	f.Sync()
 
 	// metadata fixes
-	imgData := getCoverArt(t.ID)
+	imgData, err := getCoverArt(t.ID)
+	if err != nil {
+		return err
+	}
 
 	file, err := flac.ParseFile(path)
 	picture, err := flacpicture.NewFromImageData(flacpicture.PictureTypeFrontCover, "Front cover", imgData, "image/jpeg")
@@ -371,17 +428,21 @@ func writeData(data []byte, t track, a album, path string) {
 	file.Meta = append(file.Meta, &cmtsmeta)
 
 	file.Save(path)
+	return nil
 }
 
-func getArgs(reader *bufio.Reader) []string {
+func getArgs(reader *bufio.Reader) ([]string, error) {
 	c, _ := reader.ReadString('\n')
 	r := csv.NewReader(strings.NewReader(c))
 	r.Comma = ' '
 
 	args, err := r.Read()
-	check(err)
+	if err != nil {
+		fmt.Print("Failed during arg parsing\r\n")
+		return []string{}, err
+	}
 
-	return args
+	return args, nil
 }
 
 // commhand shared globals (used for saving between commands)
@@ -442,7 +503,15 @@ func artistComm(args []string) {
 		return
 	}
 
-	prev = getArtistsFromName(args[1])[0]
+	artists, err := getArtistsFromName(args[1])
+	if err != nil {
+		return
+	}
+	if len(artists) == 0 {
+		fmt.Printf("No artists found with name \"%s\"\r\n", args[1])
+		return
+	}
+	prev = artists[0]
 
 	t, ok := prev.(prevDataType)
 	if !ok {
@@ -466,7 +535,10 @@ func albumComm(args []string) {
 		return
 	}
 
-	albums := getAlbumsFromArtist(id)
+	albums, err := getAlbumsFromArtist(id)
+	if err != nil {
+		return
+	}
 	for i, a := range albums {
 		fmt.Printf("[%3d] Name: %s (ID: %d)\r\n", i, a.Title, a.ID)
 	}
@@ -513,7 +585,10 @@ func trackComm(args []string) {
 		return
 	}
 
-	tracks, trackNum := getTracksFromAlbum(id)
+	tracks, trackNum, err := getTracksFromAlbum(id)
+	if err != nil {
+		return
+	}
 	for i, a := range tracks {
 		fmt.Printf("[%3d/%3d] Name: %s (ID: %d)\r\n", i+1, trackNum, a.Title, a.ID)
 	}
@@ -709,11 +784,23 @@ var commands map[string]*command = map[string]*command{
 				return
 			}
 
-			a := getAlbumFromID(saved_track.Album.ID)
+			a, err := getAlbumFromID(saved_track.Album.ID)
+			if err != nil {
+				return
+			}
 
-			data := getTrackData(saved_track.ID)
-			writeData(data, *saved_track, a, fmt.Sprintf("%s/temp.flac", dir))
-			ConvertFlacToMp3(fmt.Sprintf("%s/temp.flac", dir), fmt.Sprintf("%s/%s.mp3", dir, strings.ReplaceAll(saved_track.Title, " ", "_")))
+			data, err := getTrackData(saved_track.ID)
+			if err != nil {
+				return
+			}
+			err = writeData(data, *saved_track, a, fmt.Sprintf("%s/temp.flac", dir))
+			if err != nil {
+				return
+			}
+			err = ConvertFlacToMp3(fmt.Sprintf("%s/temp.flac", dir), fmt.Sprintf("%s/%s.mp3", dir, strings.ReplaceAll(saved_track.Title, " ", "_")))
+			if err != nil {
+				return
+			}
 		},
 		NonTaggedArgs: false,
 		Children: map[string]*command{
@@ -725,9 +812,15 @@ var commands map[string]*command = map[string]*command{
 						return
 					}
 
-					tracks, _ := getTracksFromAlbum(saved_album.ID)
+					tracks, _, err := getTracksFromAlbum(saved_album.ID)
+					if err != nil {
+						return
+					}
 					for _, t := range tracks {
-						data := getTrackData(t.ID)
+						data, err := getTrackData(t.ID)
+						if err != nil {
+							return
+						}
 						writeData(data, t, *saved_album, fmt.Sprintf("%s/temp.flac", dir))
 						ConvertFlacToMp3(fmt.Sprintf("%s/temp.flac", dir), fmt.Sprintf("%s/%s/%s.mp3", dir, strings.ReplaceAll(saved_album.Title, " ", "_"), strings.ReplaceAll(t.Title, " ", "_")))
 					}
@@ -748,11 +841,15 @@ func main() {
 
 			fmt.Println("Enter a new command (\"help\" for syntax) and press enter:")
 			var err error
+			var args []string
 
 			for running {
 				func() {
 					fmt.Print(" >> ")
-					args := getArgs(reader)
+					args, err = getArgs(reader)
+					if err != nil {
+						return
+					}
 
 					readRestore, err = term.MakeRaw(int(os.Stdin.Fd()))
 					check(err)
