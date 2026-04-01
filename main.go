@@ -23,6 +23,9 @@ import (
 	"golang.org/x/term"
 )
 
+// const baseURL = "http://triton.squid.wtf" // not working for some reason
+const baseURL = "https://hifi-one.spotisaver.net"
+
 type artist struct {
 	ID                         int
 	Name                       string
@@ -127,6 +130,14 @@ type track struct {
 	Artists                []condensed_artist
 	Album                  condensed_album
 	Mixes                  map[string]string
+}
+
+type condensed_track struct {
+	ID          int
+	Title       string
+	Duration    int
+	TrackNumber int
+	URL         string
 }
 
 type query[T any] struct {
@@ -249,9 +260,9 @@ func getBody[T any](url string, data *T) error {
 
 func getArtistsFromName(name string) ([]artist, error) {
 	var data artist_call
-	err := getBody(fmt.Sprintf("http://triton.squid.wtf/search?a=%s", strings.ReplaceAll(name, " ", "")), &data)
+	err := getBody(fmt.Sprintf("%s/search?a=%s", baseURL, strings.ReplaceAll(name, " ", "")), &data)
 	if err != nil {
-		fmt.Print("Failed to grab artist\r\n")
+		fmt.Printf("Failed to grab artist with err: %s\r\n", err)
 		return []artist{}, err
 	}
 
@@ -260,7 +271,7 @@ func getArtistsFromName(name string) ([]artist, error) {
 
 func getAlbumsFromArtist(id int) ([]album, error) {
 	var data artist_albums_call
-	err := getBody(fmt.Sprintf("https://triton.squid.wtf/artist?f=%d&skip_tracks=True", id), &data)
+	err := getBody(fmt.Sprintf("%s/artist?f=%d&skip_tracks=True", baseURL, id), &data)
 	if err != nil {
 		fmt.Print("Failed to grab albums\r\n")
 		return []album{}, err
@@ -271,7 +282,7 @@ func getAlbumsFromArtist(id int) ([]album, error) {
 
 func getAlbumFromID(id int) (album, error) {
 	var data album_call
-	err := getBody(fmt.Sprintf("http://triton.squid.wtf/album?id=%d", id), &data)
+	err := getBody(fmt.Sprintf("%s/album?id=%d", baseURL, id), &data)
 	if err != nil {
 		fmt.Print("Failed to grab album\r\n")
 		return album{}, err
@@ -282,7 +293,7 @@ func getAlbumFromID(id int) (album, error) {
 
 func getTracksFromAlbum(id int) ([]track, int, error) {
 	var data album_call
-	err := getBody(fmt.Sprintf("http://triton.squid.wtf/album?id=%d", id), &data)
+	err := getBody(fmt.Sprintf("%s/album?id=%d", baseURL, id), &data)
 	if err != nil {
 		fmt.Print("Failed to grab tracks\r\n")
 		return []track{}, -1, err
@@ -298,6 +309,21 @@ func getTracksFromAlbum(id int) ([]track, int, error) {
 	return tracks, data.Data.NumberOfTracks, nil
 }
 
+func getTrackFromID(id int) (track, error) {
+	var data struct {
+		Version string
+		Data    struct {
+			track
+		}
+	}
+	err := getBody(fmt.Sprintf("%s/info/?id=%d", baseURL, id), &data)
+	if err != nil {
+		return track{}, err
+	}
+
+	return data.Data.track, nil
+}
+
 func getTrackData(id int) ([]byte, error) {
 	errorHandle := func(err error) bool {
 		if err != nil {
@@ -308,7 +334,7 @@ func getTrackData(id int) ([]byte, error) {
 	}
 
 	var data track_call
-	err := getBody(fmt.Sprintf("https://triton.squid.wtf/track/?id=%d", id), &data)
+	err := getBody(fmt.Sprintf("%s/track/?id=%d", baseURL, id), &data)
 	if errorHandle(err) {
 		return []byte{}, err
 	}
@@ -369,7 +395,7 @@ func getCoverArt(id int) ([]byte, error) {
 	}
 
 	var data cover_call
-	err := getBody(fmt.Sprintf("https://triton.squid.wtf/cover?id=%d", id), &data)
+	err := getBody(fmt.Sprintf("%s/cover?id=%d", baseURL, id), &data)
 	if errorHandle(err) {
 		return []byte{}, err
 	}
@@ -393,7 +419,7 @@ func writeData(data []byte, t track, a album, path string) error {
 	err = os.MkdirAll(filepath.Dir(path), 0755)
 	f, err := os.Create(path)
 	if err != nil {
-		fmt.Print("Failed during creation of flac file\r\n")
+		fmt.Printf("Failed during creation of flac file: %s\r\n", path)
 		return err
 	}
 
@@ -401,7 +427,7 @@ func writeData(data []byte, t track, a album, path string) error {
 
 	_, err = f.Write(data)
 	if err != nil {
-		fmt.Print("Failed during creation of flac file\r\n")
+		fmt.Print("Failed during writing to flac file\r\n")
 		return err
 	}
 
@@ -453,7 +479,7 @@ var saved_artist_list []artist = nil
 var saved_album_list []album = nil
 var saved_track_list []track = nil
 var prev any
-var dir string
+var dir string = "./temp"
 
 var reader = bufio.NewReader(os.Stdin)
 var readRestore *term.State
@@ -526,17 +552,67 @@ func albumComm(args []string) {
 	var err error
 
 	if len(args) >= 2 {
-		id, err = strconv.Atoi(args[1])
+		id, err = strconv.Atoi(args[1]) // album ID
+		if err != nil {                 // do string parsing (assuming saved artist)
+			if saved_artist == nil {
+				return
+			}
+
+			artist_id := saved_artist.ID
+			albums, err := getAlbumsFromArtist(artist_id)
+			if err != nil {
+				return
+			}
+
+			id = -1
+			for _, a := range albums {
+				if strings.EqualFold(a.Title, args[1]) {
+					id = a.ID
+					break
+				}
+			}
+
+			if id == -1 {
+				return
+			}
+		}
+	} else {
+		fmt.Printf("Provide an album id or title when searching\r\n")
+		return
+	}
+
+	album, err := getAlbumFromID(id)
+	if err != nil {
+		return
+	}
+
+	prev = album
+	t, ok := prev.(prevDataType)
+	if !ok {
+		fmt.Printf("Album \"%s\" couldn't be found\r\n", args[1])
+		return
+	}
+
+	fmt.Printf("Name: %s (ID: %d)\r\n", t.DisplayName(), t.IDNum())
+}
+
+func albumFromArtistComm(args []string) {
+	var id int
+	var err error
+
+	if len(args) >= 3 {
+		id, err = strconv.Atoi(args[2]) // album ID
 		check(err)
 	} else if saved_artist != nil {
 		id = saved_artist.ID
 	} else {
-		fmt.Printf("Provide an artist id or saved artist when searching\r\n")
+		fmt.Printf("Provide an artist ID or saved artist when searching\r\n")
 		return
 	}
 
 	albums, err := getAlbumsFromArtist(id)
 	if err != nil {
+		fmt.Printf("failed to get artist with error: %s\r\n", err)
 		return
 	}
 	for i, a := range albums {
@@ -564,11 +640,31 @@ func albumComm(args []string) {
 
 	t, ok := prev.(prevDataType)
 	if !ok {
-		fmt.Printf("Album \"%s\" couldn't be found\r\n", args[1])
+		fmt.Printf("Album \"%s\" couldn't be found\r\n", args[2])
 		return
 	}
 
 	fmt.Printf("Name: %s (ID: %d)\r\n", t.DisplayName(), t.IDNum())
+}
+
+func downloadAlbum(album *album) {
+	if album == nil {
+		fmt.Printf("No album passed\r\n")
+		return
+	}
+
+	tracks, _, err := getTracksFromAlbum(album.ID)
+	if err != nil {
+		return
+	}
+	for _, t := range tracks {
+		data, err := getTrackData(t.ID)
+		if err != nil {
+			return
+		}
+		writeData(data, t, *album, fmt.Sprintf("%s/temp.flac", dir))
+		ConvertFlacToMp3(fmt.Sprintf("%s/temp.flac", dir), fmt.Sprintf("%s/%s/%s.mp3", dir, strings.ReplaceAll(album.Title, " ", "_"), strings.ReplaceAll(t.Title, " ", "_")))
+	}
 }
 
 func trackComm(args []string) {
@@ -576,7 +672,62 @@ func trackComm(args []string) {
 	var err error
 
 	if len(args) >= 2 {
-		id, err = strconv.Atoi(args[1])
+		id, err = strconv.Atoi(args[1]) // get ID if that is passed
+		if err != nil {                 // do string parsing (assuming saved album)
+			if saved_album == nil {
+				fmt.Printf("Saved album is not initialized \r\n")
+				return
+			}
+
+			album_id := saved_album.ID
+			tracks, _, err := getTracksFromAlbum(album_id)
+			if err != nil {
+				fmt.Printf("Failed to fetch albums \r\n")
+				return
+			}
+
+			id = -1
+			for _, a := range tracks {
+				if strings.EqualFold(a.Title, args[1]) {
+					id = a.ID
+					break
+				}
+			}
+
+			if id == -1 {
+				fmt.Printf("Track not matched \r\n")
+				return
+			}
+		}
+	} else if saved_track != nil {
+		id = saved_track.ID
+	} else {
+		fmt.Printf("Provide an track id or saved track when searching\r\n")
+		return
+	}
+
+	track, err := getTrackFromID(id)
+	if err != nil {
+		fmt.Printf("Failed to fetch track data \r\n")
+		return
+	}
+
+	prev = track
+	t, ok := prev.(prevDataType)
+	if !ok {
+		fmt.Printf("Track \"%s\" couldn't be found\r\n", args[1])
+		return
+	}
+
+	fmt.Printf("Name: %s (ID: %d)\r\n", t.DisplayName(), t.IDNum())
+}
+
+func trackFromAlbumComm(args []string) {
+	var id int
+	var err error
+
+	if len(args) >= 3 {
+		id, err = strconv.Atoi(args[2])
 		check(err)
 	} else if saved_album != nil {
 		id = saved_album.ID
@@ -614,10 +765,34 @@ func trackComm(args []string) {
 
 	t, ok := prev.(prevDataType)
 	if !ok {
-		fmt.Printf("Track \"%s\" couldn't be found\r\n", args[1])
+		fmt.Printf("Track \"%s\" couldn't be found\r\n", args[2])
 	}
 
 	fmt.Printf("Name: %s (ID: %d)\r\n", t.DisplayName(), t.IDNum())
+}
+
+func downloadTrack(track *track, album *album) {
+	if track == nil {
+		fmt.Printf("No track passed\r\n")
+		return
+	}
+	if album == nil {
+		fmt.Printf("No album passed\r\n")
+		return
+	}
+
+	data, err := getTrackData(track.ID)
+	if err != nil {
+		return
+	}
+	err = writeData(data, *track, *album, fmt.Sprintf("%s/temp.flac", dir))
+	if err != nil {
+		return
+	}
+	err = ConvertFlacToMp3(fmt.Sprintf("%s/temp.flac", dir), fmt.Sprintf("%s/%s.mp3", dir, strings.ReplaceAll(track.Title, " ", "_")))
+	if err != nil {
+		return
+	}
 }
 
 func commhand(args []string, commands map[string]*command, currentArg int) (bool, bool) {
@@ -646,7 +821,64 @@ func commhand(args []string, commands map[string]*command, currentArg int) (bool
 
 	c.Run(args)
 
+	for _, a := range args[currentArg+1:] {
+		switch a {
+		case "-s":
+			prev.(prevDataType).SetPrev()
+
+		case "-d":
+			if album, ok := prev.(album); ok {
+				downloadAlbum(&album)
+			} else if track, ok := prev.(track); ok {
+				a, err := getAlbumFromID(track.Album.ID)
+				if err != nil {
+					fmt.Printf("Album could not be parsed\r\n")
+					break
+				}
+
+				downloadTrack(&track, &a)
+			} else {
+				fmt.Print("Not album or track, couldn't download\r\n")
+			}
+
+		default:
+		}
+	}
+
 	return true, true
+}
+
+var fileComm = command{
+	Pattern: "file \"[a-zA-Z0-9_]+\"",
+	Run: func(args []string) {
+		file := args[1]
+		f, err := os.Open(file)
+		if err != nil {
+			fmt.Printf("Error opening CSV file: %s\r\n", err)
+			return
+		}
+		defer f.Close()
+
+		scanner := bufio.NewScanner(f)
+
+		for scanner.Scan() {
+			r := csv.NewReader(strings.NewReader(scanner.Text()))
+			r.Comma = ' '
+
+			arr, err := r.Read()
+			if err != nil {
+				fmt.Print("Failed during file parsing\r\n")
+				return
+			}
+
+			for i, s := range arr {
+				arr[i] = strings.ReplaceAll(strings.ReplaceAll(s, "\"", ""), "'", "")
+			}
+			commhand(arr, commands, 0)
+		}
+	},
+	NonTaggedArgs: true,
+	Children:      map[string]*command{},
 }
 
 var commands map[string]*command = map[string]*command{
@@ -753,13 +985,27 @@ var commands map[string]*command = map[string]*command{
 		Pattern:       "album [0-9]*",
 		Run:           albumComm,
 		NonTaggedArgs: true,
-		Children:      map[string]*command{},
+		Children: map[string]*command{
+			"artist": {
+				Pattern:       "album artist [0-9]*",
+				Run:           albumFromArtistComm,
+				NonTaggedArgs: true,
+				Children:      map[string]*command{},
+			},
+		},
 	},
 	"track": {
-		Pattern:       "album [0-9]*",
+		Pattern:       "track [0-9]*",
 		Run:           trackComm,
 		NonTaggedArgs: true,
-		Children:      map[string]*command{},
+		Children: map[string]*command{
+			"album": {
+				Pattern:       "track album [0-9]*",
+				Run:           trackFromAlbumComm,
+				NonTaggedArgs: true,
+				Children:      map[string]*command{},
+			},
+		},
 	},
 	"dir": {
 		Pattern: "dir",
@@ -779,51 +1025,19 @@ var commands map[string]*command = map[string]*command{
 	"download": {
 		Pattern: "download",
 		Run: func(args []string) {
-			if saved_track == nil {
-				fmt.Printf("No track is saved\r\n")
-				return
-			}
-
 			a, err := getAlbumFromID(saved_track.Album.ID)
 			if err != nil {
+				fmt.Printf("No album passed\r\n")
 				return
 			}
-
-			data, err := getTrackData(saved_track.ID)
-			if err != nil {
-				return
-			}
-			err = writeData(data, *saved_track, a, fmt.Sprintf("%s/temp.flac", dir))
-			if err != nil {
-				return
-			}
-			err = ConvertFlacToMp3(fmt.Sprintf("%s/temp.flac", dir), fmt.Sprintf("%s/%s.mp3", dir, strings.ReplaceAll(saved_track.Title, " ", "_")))
-			if err != nil {
-				return
-			}
+			downloadTrack(saved_track, &a)
 		},
 		NonTaggedArgs: false,
 		Children: map[string]*command{
 			"album": {
 				Pattern: "download album",
 				Run: func(args []string) {
-					if saved_album == nil {
-						fmt.Printf("No album is saved\r\n")
-						return
-					}
-
-					tracks, _, err := getTracksFromAlbum(saved_album.ID)
-					if err != nil {
-						return
-					}
-					for _, t := range tracks {
-						data, err := getTrackData(t.ID)
-						if err != nil {
-							return
-						}
-						writeData(data, t, *saved_album, fmt.Sprintf("%s/temp.flac", dir))
-						ConvertFlacToMp3(fmt.Sprintf("%s/temp.flac", dir), fmt.Sprintf("%s/%s/%s.mp3", dir, strings.ReplaceAll(saved_album.Title, " ", "_"), strings.ReplaceAll(t.Title, " ", "_")))
-					}
+					downloadAlbum(saved_album)
 				},
 				NonTaggedArgs: false,
 				Children:      map[string]*command{},
@@ -834,7 +1048,7 @@ var commands map[string]*command = map[string]*command{
 
 func main() {
 	cmd := &cli.Command{
-		Name:  "console",
+		Name:  "musicCLI",
 		Usage: "Start console prompt for interfacing with music grabber",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			running := true
@@ -861,80 +1075,18 @@ func main() {
 						}
 					}()
 
-					commhand(args, commands, 0)
+					fullComm := make(map[string]*command)
+					for k, v := range commands {
+						fullComm[k] = v
+					}
+					fullComm["file"] = &fileComm
+
+					commhand(args, fullComm, 0)
 				}()
 			}
 
 			return nil
 		},
-		/*Commands: []*cli.Command{
-			{
-				Name:  "artist",
-				Usage: "Get information related to an artist",
-				Commands: []*cli.Command{
-					{
-						Name:  "info",
-						Usage: "Get information about an artist",
-						Action: func(ctx context.Context, cmd *cli.Command) error {
-							artists := getArtistsFromName("The New Pornographers")
-							for _, a := range artists {
-								fmt.Printf("Name: %s (ID: %d)\r\n", a.Name, a.ID)
-							}
-
-							return nil
-						},
-					},
-					{
-						Name:  "albums",
-						Usage: "Gets album titles and IDs (with optional track inclusion) from an artist",
-						Action: func(ctx context.Context, cmd *cli.Command) error {
-							albums := getAlbumsFromArtist(3575035)
-							for _, i := range albums {
-								fmt.Printf("Album: %s (ID: %d)\r\n", i.Title, i.ID)
-							}
-
-							return nil
-						},
-					},
-				},
-			},
-			{
-				Name:  "album",
-				Usage: "Grabs data about albums",
-				Commands: []*cli.Command{
-					{
-						Name:  "tracks",
-						Usage: "Get tracks and their IDs from album",
-						Action: func(ctx context.Context, cmd *cli.Command) error {
-							tracks, numTracks := getTracksFromAlbum(49793859)
-
-							fmt.Printf("%s Tracks:\r\n", tracks[0].Album.Title)
-							for _, t := range tracks {
-								fmt.Printf("[%2d/%d] Title: %s (ID: %d)\r\n", t.TrackNumber, numTracks, t.Title, t.ID)
-							}
-
-							return nil
-						},
-					},
-				},
-			},
-			{
-				Name:  "track",
-				Usage: "Get track data",
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					path, err := os.UserHomeDir()
-					check(err)
-					flacPath := filepath.Join(path, "test_data.flac")
-					mp3Path := filepath.Join(path, "test_data.mp3")
-
-					data := getTrackData(49793860)
-					writeData(data, flacPath)
-					ConvertFlacToMp3(flacPath, mp3Path)
-
-					return nil
-				},
-			},
-		},*/
 	}
 
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
