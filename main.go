@@ -970,9 +970,6 @@ var commands map[string]*command = map[string]*command{
 					},
 				},
 			},
-			"list": {
-				Pattern: "save list",
-			},
 		},
 	},
 	"artist": {
