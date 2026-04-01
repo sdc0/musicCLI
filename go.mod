@@ -1,4 +1,4 @@
-module main
+module github.com/sdc0/musicCLI
 
 go 1.25.5
 
