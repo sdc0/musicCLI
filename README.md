@@ -5,12 +5,19 @@ MusicCLI is a small command line tool to interface with the [HiFi API](https://g
 MusicCLI supports a set of commands detailed below alongside file input in the form of space delimited commands.
 
 ### How to run MusicCLI
-Ensure you have installed [Go](https://go.dev/dl/), then run the following to enter the command line interface:
+Ensure you have installed [Go](https://go.dev/dl/), then run the following commands to add the `musicCLI` command to terminal:
+```
+go install github.com/sdc0/musicCLI@latest
+```
+
+If you prefer to build from source instead run the following and add the resulting `musicCLI` executable to the Go bin folder:
 ```
 git clone https://github.com/sdc0/musicCLI.git
 cd musicCLI
-go run .
+go build
 ```
+
+After doing one of the two, ensure the Go bin folder is in Path variables and reboot terminal to ensure functionality.
 
 ---
 
