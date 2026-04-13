@@ -2,6 +2,10 @@
 !*.*
 !*/
 
+
+*.py
+__pycache__/
+
 *.mp3
 *.flac
 temp/

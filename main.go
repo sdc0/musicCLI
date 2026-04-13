@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"github.com/go-flac/flacpicture/v2"
 	"github.com/go-flac/flacvorbis/v2"
 	"github.com/go-flac/go-flac/v2"
-	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 )
@@ -130,14 +130,6 @@ type track struct {
 	Artists                []condensed_artist
 	Album                  condensed_album
 	Mixes                  map[string]string
-}
-
-type condensed_track struct {
-	ID          int
-	Title       string
-	Duration    int
-	TrackNumber int
-	URL         string
 }
 
 type query[T any] struct {
@@ -262,7 +254,7 @@ func getArtistsFromName(name string) ([]artist, error) {
 	var data artist_call
 	err := getBody(fmt.Sprintf("%s/search?a=%s", baseURL, strings.ReplaceAll(name, " ", "")), &data)
 	if err != nil {
-		fmt.Printf("Failed to grab artist with err: %s\r\n", err)
+		fmt.Printf("Failed to grab artist with err: %s [%s]\r\n", err, name)
 		return []artist{}, err
 	}
 
@@ -273,7 +265,7 @@ func getAlbumsFromArtist(id int) ([]album, error) {
 	var data artist_albums_call
 	err := getBody(fmt.Sprintf("%s/artist?f=%d&skip_tracks=True", baseURL, id), &data)
 	if err != nil {
-		fmt.Print("Failed to grab albums\r\n")
+		fmt.Printf("Failed to grab albums [%d]\r\n", id)
 		return []album{}, err
 	}
 
@@ -284,7 +276,7 @@ func getAlbumFromID(id int) (album, error) {
 	var data album_call
 	err := getBody(fmt.Sprintf("%s/album?id=%d", baseURL, id), &data)
 	if err != nil {
-		fmt.Print("Failed to grab album\r\n")
+		fmt.Printf("Failed to grab album [%d]\r\n", id)
 		return album{}, err
 	}
 
@@ -295,7 +287,7 @@ func getTracksFromAlbum(id int) ([]track, int, error) {
 	var data album_call
 	err := getBody(fmt.Sprintf("%s/album?id=%d", baseURL, id), &data)
 	if err != nil {
-		fmt.Print("Failed to grab tracks\r\n")
+		fmt.Printf("Failed to grab tracks [%d]\r\n", id)
 		return []track{}, -1, err
 	}
 
@@ -327,7 +319,7 @@ func getTrackFromID(id int) (track, error) {
 func getTrackData(id int) ([]byte, error) {
 	errorHandle := func(err error) bool {
 		if err != nil {
-			fmt.Print("Failed to grab track data\r\n")
+			fmt.Printf("Failed to grab track data with err: %s [%d]\r\n", err, id)
 			return true
 		}
 		return false
@@ -369,17 +361,25 @@ func ConvertFlacToMp3(flacPath string, mp3Path string) error {
 	prev := log.Writer()
 	log.SetOutput(io.Discard) // disable Go logging to prevent ffmpeg-go from logging
 
-	err := ffmpeg.Input(flacPath).Output(mp3Path, ffmpeg.KwArgs{
-		"c:v":      "copy",
-		"loglevel": "quiet",
-	}).OverWriteOutput().ErrorToStdOut().Run()
+	cmd := exec.Command("ffmpeg", "-i", flacPath, "-y", "-loglevel", "quiet", fmt.Sprintf("%s_temp.mp3", mp3Path))
+	out, err := cmd.Output()
 
-	log.SetOutput(prev) // re-enable Go logging
 	if err != nil {
-		fmt.Print("Failed in flac to mp3 conversion\r\n")
+		log.SetOutput(prev) // re-enable Go logging
+		fmt.Printf("Failed to convert from flac to mp3 [%s]\r\n", out)
 		return err
 	}
 
+	cmd = exec.Command("ffmpeg", "-i", fmt.Sprintf("%s_temp.mp3", mp3Path), "-y", "-write_xing", "0", mp3Path) // fixes issue with track length in metadata
+	out, err = cmd.Output()
+
+	log.SetOutput(prev) // re-enable Go logging
+	if err != nil {
+		fmt.Printf("Failed in mp3 XING tags conversion [%s]\r\n", out)
+		return err
+	}
+
+	_ = os.Remove(fmt.Sprintf("%s_temp.mp3", mp3Path))
 	_ = os.Remove(flacPath)
 
 	return nil
@@ -419,7 +419,7 @@ func writeData(data []byte, t track, a album, path string) error {
 	err = os.MkdirAll(filepath.Dir(path), 0755)
 	f, err := os.Create(path)
 	if err != nil {
-		fmt.Printf("Failed during creation of flac file: %s\r\n", path)
+		fmt.Printf("Failed during creation of flac file: %s [%s]\r\n", path, t.Title)
 		return err
 	}
 
@@ -427,7 +427,7 @@ func writeData(data []byte, t track, a album, path string) error {
 
 	_, err = f.Write(data)
 	if err != nil {
-		fmt.Print("Failed during writing to flac file\r\n")
+		fmt.Printf("Failed during writing to flac file [%s]\r\n", t.Title)
 		return err
 	}
 
@@ -475,9 +475,6 @@ func getArgs(reader *bufio.Reader) ([]string, error) {
 var saved_artist *artist = nil
 var saved_album *album = nil
 var saved_track *track = nil
-var saved_artist_list []artist = nil
-var saved_album_list []album = nil
-var saved_track_list []track = nil
 var prev any
 var dir string = "./temp"
 
@@ -657,7 +654,9 @@ func downloadAlbum(album *album) {
 	if err != nil {
 		return
 	}
-	for _, t := range tracks {
+
+	for i, t := range tracks {
+		fmt.Printf("Downloading track %d [%s]\r\n", i+1, t.Title)
 		data, err := getTrackData(t.ID)
 		if err != nil {
 			return
